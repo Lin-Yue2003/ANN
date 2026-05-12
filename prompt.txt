@@ -1,0 +1,495 @@
+You are a careful research coding agent. Your task is to improve the current Filtered Approximate Nearest Neighbor Search project score.
+
+Important workflow
+==================
+I may need to switch to another machine to run full experiments.
+
+Therefore, your job is not only to modify the algorithm, but also to make the experiment easy to reproduce elsewhere.
+
+Do not block progress just because full SIFT cannot be executed here. Make the code changes, run small sanity tests if possible, then give me the exact commands for full experiments. I will run them on another device and paste the results back to you.
+
+Project objective
+=================
+The final evaluation metric is:
+
+    S = (QPS / 100) * R^2
+
+where:
+- R is mean Recall@50 against the exact filtered KNN ground truth.
+- QPS is queries per second.
+- K = 50.
+- Index build time is excluded from QPS, but search time must be measured honestly.
+- Because recall is squared, do not sacrifice recall too aggressively for speed.
+
+Important constraints
+=====================
+1. Do NOT change the overall validation/evaluation framework unless absolutely necessary.
+2. Do NOT change the meaning of Recall@K, QPS, or final score.
+3. Do NOT change the dataset generation protocol unless you are adding extra diagnostics.
+4. Keep PreFilterSearch as the exact ground-truth generator.
+5. You may modify the algorithmic search method, index structure, candidate generation, filtering logic, reranking logic, and tuning parameters.
+6. Every new method must be validated by ablation. Do not keep a modification unless it improves the final score or gives a clearly documented trade-off.
+7. Keep experiments reproducible with fixed seeds.
+8. Record every experiment result in a structured log file, such as CSV or JSONL.
+
+Current codebase summary
+========================
+The current implementation has:
+- main.py: experiment entry point and CLI.
+- prefilter.py: exact pre-filtering baseline. It filters by label range [lo, hi], computes exact L2 distances on the filtered subset, and returns the exact top-k. This is ground truth.
+- postfilter.py: approximate method. It queries an E2LSH index, filters candidates by label range [lo, hi], then reranks survivors by exact L2 distance.
+- lsh_index.py: optimized E2LSH implementation with batched projection, integer bucket keys, and fast concat-sort-diff deduplication.
+- evaluate.py: computes mean Recall@K, median recall, min recall, QPS, final score, and recall by selectivity bins.
+
+Do not break the existing command:
+
+    python main.py --sift
+
+and make sure any new method can be selected through CLI arguments.
+
+Core formulas and definitions
+=============================
+
+Filtered nearest neighbor target:
+Given base vectors x_i, labels a_i, query q, and filter range r = [lo, hi], return:
+
+    top-k among { i | lo <= a_i <= hi } sorted by ||q - x_i||_2^2
+
+Recall@K:
+For approximate result R_q and exact ground truth G_q:
+
+    Recall@K(q) = |R_q ∩ G_q| / |G_q|
+
+Mean recall:
+
+    R = mean_q Recall@K(q)
+
+Final score:
+
+    S = (QPS / 100) * R^2
+
+E2LSH hash function:
+For vector v:
+
+    h_{a,b}(v) = floor((a · v + b) / w)
+
+where:
+- a ~ N(0, I)
+- b ~ Uniform(0, w)
+- w is bin width
+
+Compound key with K hash functions per table:
+
+    H_t(v) = (h_{t,1}(v), ..., h_{t,K}(v))
+
+Multiple L tables reduce miss probability:
+
+    P(miss) = (1 - p(d)^K)^L
+
+where p(d) is the single-function collision probability for distance d.
+
+Filter-augmented vector idea:
+For base vector x_i and label a_i:
+
+    z_i = [sqrt(alpha) * x_i ; sqrt(1 - alpha) * normalize(a_i)]
+
+For query q and range [lo, hi], use midpoint m = (lo + hi) / 2:
+
+    z_q = [sqrt(alpha) * q ; sqrt(1 - alpha) * normalize(m)]
+
+Possible label normalization:
+
+    normalize(a_i) = a_i / n_labels
+
+If label is broadcast to d_label dimensions:
+
+    label_vec_i = repeat(a_i / n_labels, d_label)
+
+Then:
+
+    z_i = concat(sqrt(alpha) * x_i,
+                 sqrt(1 - alpha) * label_vec_i)
+
+Important: alpha must be tuned. Large alpha behaves like normal vector LSH. Small alpha overemphasizes labels and may hurt vector recall.
+
+Research directions to try
+==========================
+
+Direction 1: Systematic parameter tuning for current filter-augmented LSH
+-------------------------------------------------------------------------
+Tune the existing LSH parameters first before adding complex methods.
+
+Sweep:
+- alpha: [0.01, 0.03, 0.05, 0.08, 0.1, 0.2, 0.4, 0.6, 0.8]
+- label_dim_ratio: [0.01, 0.03, 0.05, 0.1, 0.2]
+- n_tables L: [100, 200, 300, 400, 600, 800]
+- n_functions K: [2, 3, 4, 5]
+- bin_width w: [0.10, 0.15, 0.20, 0.22, 0.30, 0.40, 0.60, 0.80, 1.00]
+
+For each run, record:
+- mean recall
+- median recall
+- min recall
+- QPS
+- final score
+- avg_total_candidates
+- avg_surviving_candidates
+- avg_survival_rate
+- zero-candidate queries
+- zero-surviving queries
+- recall by selectivity bin
+
+Keep the best configuration as the tuned baseline.
+
+Direction 2: Adaptive strategy by filter selectivity
+----------------------------------------------------
+The filter width varies a lot. A single method may not be optimal for all queries.
+
+Define selectivity:
+
+    sel = (hi - lo + 1) / n_labels
+
+Implement a hybrid search policy:
+
+    if sel <= tau_small:
+        use small-range method
+    elif sel <= tau_medium:
+        use filter-augmented LSH
+    else:
+        use normal LSH or post-filtering
+
+Candidate methods:
+A. Small selectivity:
+   - Use exact pre-filter scan if the filtered set is small enough.
+   - Since labels are uniform, expected filtered size is approximately:
+
+        |S_f| ≈ N * sel
+
+   - Exact scan cost is O(|S_f| * D).
+   - This may be faster than LSH when sel is very small.
+
+B. Medium selectivity:
+   - Use filter-augmented LSH.
+   - This should reduce wasted candidates while keeping recall.
+
+C. Large selectivity:
+   - Use ordinary vector LSH or weakly filter-augmented LSH.
+   - Since most candidates pass the filter, pure vector similarity may work better.
+
+Sweep thresholds:
+- tau_small: [0.005, 0.01, 0.02, 0.03, 0.05]
+- tau_medium: [0.05, 0.10, 0.15, 0.20, 0.30]
+
+Strict rule:
+Compare hybrid strategy against the best single LSH configuration. Keep it only if final score improves.
+
+Direction 3: Label bucket acceleration for exact small-range search
+-------------------------------------------------------------------
+Build an auxiliary label index:
+
+    label_to_ids[label] = sorted array of vector ids with that label
+
+For a range [lo, hi], obtain valid ids by concatenating:
+
+    valid_ids = concat(label_to_ids[lo], ..., label_to_ids[hi])
+
+Then exact rerank only those ids.
+
+This improves the small-range exact branch by avoiding boolean mask scans over all N labels.
+
+Possible optimization:
+- Precompute sorted order by label.
+- Store start/end offsets for each label.
+- For a range [lo, hi], use offsets to slice ids efficiently.
+
+Implementation idea:
+    order = np.argsort(labels)
+    sorted_labels = labels[order]
+    label_start[label], label_end[label]
+
+Then for [lo, hi]:
+    left = label_start[lo]
+    right = label_end[hi]
+    valid_ids = order[left:right]
+
+If labels are contiguous and sorted, this is much faster than np.where((labels >= lo) & (labels <= hi)).
+
+Ablation:
+- PreFilter original mask scan vs label-sorted exact scan.
+- Use in hybrid only for small selectivity if it improves score.
+
+Direction 4: Multi-probe LSH around nearby buckets
+--------------------------------------------------
+Current LSH probes only the exact bucket for each table. To improve recall, also probe nearby bucket keys.
+
+For E2LSH slab vector s = floor((Aq + b) / w), nearby buckets are:
+
+    s + delta
+
+where delta has small values such as:
+- one-dimensional +/-1 perturbations
+- top few projection dimensions closest to bucket boundary
+- limited Hamming radius over slab coordinates
+
+Simpler version:
+For each table and each query, generate neighboring keys by changing one of the K slab components by ±1:
+
+    neighbors = {s}
+    for j in 1..K:
+        neighbors.add(s with s_j + 1)
+        neighbors.add(s with s_j - 1)
+
+Then lookup all generated keys.
+
+Expected effect:
+- Recall increases.
+- Candidate count increases.
+- QPS decreases.
+
+Ablation:
+- probe_radius = 0, 1
+- max_extra_probes per table = [0, 2, 4, 8]
+- Keep only if final score improves.
+
+Direction 5: Candidate budget and early stopping
+------------------------------------------------
+Current LSH may return too many candidates for some queries and too few for others.
+
+Implement candidate budget controls:
+- max_candidates_per_query
+- min_candidates_before_rerank
+- dynamic expansion if surviving candidates < k
+
+Policy example:
+1. Query LSH.
+2. Filter candidates.
+3. If survivors < k and multi-probe is enabled, probe additional neighboring buckets.
+4. Stop when survivors >= beta * k or candidate count exceeds budget.
+
+Sweep:
+- beta: [1, 2, 4, 8]
+- max_candidates: [500, 1000, 2000, 5000, 10000, 20000]
+
+Record survival rate and recall. The best score may not need perfect recall.
+
+Direction 6: Range-partitioned LSH
+----------------------------------
+Build multiple LSH indices for label blocks.
+
+Example:
+- block size = 25, 50, 100 labels
+- each block has its own LSH index
+- query [lo, hi] searches only overlapping blocks
+- after collecting candidates, still apply exact label filter and L2 rerank
+
+Possible issue:
+- More memory and build time.
+- Query may need to touch many blocks.
+- Very small blocks may produce too few candidates.
+
+Sweep:
+- block_size: [25, 50, 100, 200]
+- per-block LSH tables: [20, 50, 100]
+- query max blocks limit if needed
+
+Ablation:
+Compare:
+- global filter-augmented LSH
+- range-partitioned LSH
+- hybrid: exact for small, partitioned LSH for medium, global LSH for large
+
+Direction 7: Two-stage reranking with larger candidate pool
+-----------------------------------------------------------
+Because the final result is judged by exact filtered top-k, always rerank candidates by exact L2 after filtering.
+
+Try retrieving a larger candidate pool, then exact rerank:
+- more tables
+- larger bin width
+- multi-probe
+- partition union
+
+Tune candidate pool size. Too small hurts recall; too large hurts QPS.
+
+Record:
+- candidate count before filtering
+- candidate count after filtering
+- rerank time
+- total query time
+- recall
+
+Direction 8: Use distance lower-cost filtering before full reranking
+--------------------------------------------------------------------
+If candidate set is large, compute approximate distance first or limit reranking.
+
+Possible simple optimization:
+- Use vectorized L2 exactly, but avoid sorting all candidates.
+- Use np.argpartition to get top-k, then sort only top-k.
+- This is already used in the current code. Preserve this behavior.
+
+Do not replace exact reranking with approximate reranking unless ablation proves it improves final score.
+
+Experimental protocol
+=====================
+You must implement an experiment logger.
+
+For every experiment, write one row to a CSV or JSONL file with at least:
+
+- timestamp
+- git diff summary or method name
+- seed
+- dataset mode
+- N
+- Q
+- K
+- n_labels
+- min_sel
+- max_sel
+- method name
+- all method hyperparameters
+- search time
+- QPS
+- mean recall
+- median recall
+- min recall
+- final score
+- avg_total_candidates
+- avg_surviving_candidates
+- avg_survival_rate
+- zero_candidates
+- zero_surviving
+- recall per selectivity bin
+- notes
+
+Suggested output:
+    experiments/results.csv
+    experiments/ablation_log.md
+
+Ablation discipline
+===================
+Follow this process:
+
+Step 0: Baseline
+----------------
+If the environment can run it, run a small baseline test and record it.
+If the full SIFT experiment cannot be run here, prepare the exact baseline command for me to run on another device.
+
+Step 1: Tune current method
+---------------------------
+Implement the tuning infrastructure and logging first.
+Do not rely on memory or intuition. Every configuration must be logged.
+
+If full tuning is too expensive on this device, generate a sweep script or command list so I can run it on another device. After I provide the results, analyze the logs and select the best configuration.
+
+Step 2: Add exactly one idea at a time
+-------------------------------------
+For each new method:
+- Implement it behind a CLI flag.
+- Run a lightweight sanity test if possible.
+- Prepare the full evaluation command for me.
+- Wait for my returned full-scale results before claiming it improves the score.
+- Keep the method disabled by default unless the logged full-scale experiment proves it improves the final score.
+
+Step 3: Ablation table
+----------------------
+Maintain an ablation table based only on actually executed experiments.
+If a full experiment has not been run yet, mark it as "pending", not as improved.
+
+Step 4: Selectivity analysis
+----------------------------
+For the final method, use the full logs to report recall and score by selectivity bin.
+If full logs are unavailable, only describe the expected behavior as a hypothesis.
+Expected best direction
+=======================
+Prioritize in this order:
+
+1. Systematic tuning of existing filter-augmented LSH.
+2. Adaptive hybrid search by selectivity.
+3. Label-sorted exact scan for small filters.
+4. Multi-probe LSH for low-recall cases.
+5. Range-partitioned LSH if time permits.
+
+The most promising final system is likely:
+
+    AdaptiveFilteredSearch:
+        if selectivity is very small:
+            label-sorted exact prefilter scan
+        elif selectivity is medium:
+            filter-augmented LSH
+        else:
+            vector-dominant LSH or post-filter LSH
+
+The reason is that filtered vector search methods have different strengths under different selectivities. Small filters make exact pre-filtering cheap, medium filters benefit from filter-aware candidate generation, and large filters often work well with ordinary ANN plus post-filtering.
+
+Coding requirements
+===================
+1. Add a clear class for any new method, for example:
+       AdaptiveFilteredSearch
+       LabelSortedPreFilterSearch
+       MultiProbeE2LSH
+       PartitionedLSHSearch
+
+2. Keep the old methods available for comparison.
+
+3. Add CLI flags:
+       --method {postfilter,adaptive,partitioned,multiprobe,...}
+       --experiment-log experiments/results.csv
+       --tau-small
+       --tau-medium
+       --max-candidates
+       --multiprobe
+       --block-size
+
+4. Do not silently change defaults without recording them.
+
+5. Make code readable and minimally invasive.
+
+6. Use vectorized NumPy wherever possible.
+
+7. Avoid Python loops over individual base vectors during query time.
+
+8. After each implemented change, run at least a small sanity test:
+Execution environment constraint
+================================
+Important: The current device may not be able to run the full SIFT experiment.
+
+You should still implement the method, keep the validation framework unchanged, and run only lightweight sanity checks when possible.
+
+For any full-scale experiment, do NOT assume you can run it successfully on this device. Instead:
+
+1. Prepare the exact command I should run on another device.
+2. Explain what output files or console results I should send back to you.
+3. Make sure every experiment writes logs to:
+       experiments/results.csv
+       experiments/ablation_log.md
+4. If the full experiment is too slow, provide a staged plan:
+       small test  -> medium test  -> full SIFT test
+
+Recommended staged commands:
+    python main.py --max-base 10000 --n-query 200
+
+    python main.py --sift --max-base 100000 --n-query 1000
+
+    python main.py --sift
+
+You may run the small sanity test if the current environment allows it, but do not require full SIFT execution before making code changes.
+
+When you finish implementing a method, report:
+- what files were changed
+- what method was added
+- what small sanity test was run, if any
+- what full command I should run on the other device
+- what results I should paste back for the next iteration
+
+Final deliverables
+==================
+At the end, provide:
+
+1. A short summary of the best method.
+2. The best command to reproduce the final score.
+3. The final Recall@50, QPS, and score.
+4. An ablation table showing which ideas were tested.
+5. A short explanation of why the winning method works.
+6. Any failed ideas and why they failed.
+7. The modified files list.
+
+Do not claim improvement without logged experimental evidence.
