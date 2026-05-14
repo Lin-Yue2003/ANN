@@ -11,6 +11,13 @@
 
 set -e
 
+# 1. 先確保 experiments 目錄存在，避免接下來的 log 寫入失敗
+mkdir -p experiments
+
+# 2. 全域錯誤捕捉：將所有的 stdout 與 stderr 同時顯示在螢幕，並寫入 run_all_global.log
+exec > >(tee -i experiments/run_all_global.log)
+exec 2>&1
+
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 

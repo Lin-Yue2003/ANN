@@ -137,7 +137,12 @@ def generate_shell_commands(configs: List[Dict[str, Any]],
         # Add all hyperparameters
         for key, value in cfg.items():
             if key != 'method':
-                cmd_parts.append(f"--{key.replace('_', '-')} {value}")
+                # 特殊處理需要 lsh- 前綴的參數，使其符合 main.py 的 CLI 介面
+                if key in ['n_tables', 'n_functions', 'bin_width']:
+                    cli_arg = f"--lsh-{key.replace('_', '-')}"
+                else:
+                    cli_arg = f"--{key.replace('_', '-')}"
+                cmd_parts.append(f"{cli_arg} {value}")
         
         cmd_parts.append(f"--experiment-log {output_log}")
         cmd_parts.append(f"# Config {i+1}/{len(configs)}")
