@@ -29,6 +29,7 @@ import argparse
 import sys
 import os
 import numpy as np
+import time
 
 # Make sure our modules are importable
 sys.path.insert(0, os.path.dirname(__file__))
@@ -37,7 +38,9 @@ from data_utils   import (load_sift, generate_synthetic_data,
                            assign_labels, generate_filter_ranges)
 from prefilter    import PreFilterSearch
 from postfilter   import PostFilterSearch
-from evaluate     import print_comparison
+from adaptive_search import AdaptiveFilteredSearch
+from experiments.logger import ExperimentLogger
+from evaluate     import print_comparison, compute_recall, compute_qps
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +97,28 @@ def parse_args():
     p.add_argument("--filter-augmented", action="store_true", default=True)
     p.add_argument("--alpha", type=float, default=0.05)
     p.add_argument("--label-dim-ratio", type=float, default=0.05)
+    
+    # --- Search method selection ---
+    p.add_argument("--method", 
+                   choices=["postfilter", "adaptive", "label-sorted"],
+                   default="postfilter",
+                   help="Search method to use")
+    
+    # --- Adaptive search parameters ---
+    p.add_argument("--tau-small", type=float, default=0.01,
+                   help="Selectivity threshold for small-range exact search")
+    p.add_argument("--tau-medium", type=float, default=0.15,
+                   help="Selectivity threshold for medium-range LSH search")
+    
+    # --- Multi-probe parameters ---
+    p.add_argument("--probe-radius", type=int, default=0,
+                   help="Multi-probe LSH: probe radius (0=disabled)")
+    p.add_argument("--max-extra-probes", type=int, default=0,
+                   help="Multi-probe LSH: max extra probes per table")
+    
+    # --- Logging ---
+    p.add_argument("--experiment-log", type=str, default=None,
+                   help="CSV file to log experiment results")
 
     # --- Misc ---
     p.add_argument("--seed", type=int, default=42)
@@ -156,55 +181,148 @@ def main():
     # ------------------------------------------------------------------
     # 3. Method A: Pre-filtering (exact KNN) → also serves as ground truth
     # ------------------------------------------------------------------
-    print("\n[A] Pre-filter + exact KNN …")
+    print("\n[Ground Truth] Pre-filter + exact KNN …")
     pre = PreFilterSearch(base_vecs, labels)
     gt_results, time_pre = pre.batch_search(query_vecs, filter_ranges, k=args.k)
     print(f"    Done in {time_pre:.3f}s  "
           f"({len(gt_results) / time_pre:.1f} QPS)")
 
     # ------------------------------------------------------------------
-    # 4. Method B: Post-filtering (LSH + label filter)
+    # 4. Method B: Selected search method
     # ------------------------------------------------------------------
-    print("\n[B] LSH index build + post-filter …")
+    print(f"\n[Method] {args.method.upper()} …")
+    
     filter_aug_params = {
         "is_filter_augmented": args.filter_augmented,
         "alpha": args.alpha,
         "label_dim_ratio": args.label_dim_ratio,
         "n_labels": args.n_labels,
     }
-    post = PostFilterSearch(
-        base_vecs,
-        labels,
-        k_multiplier = args.k_multiplier,
-        n_tables     = args.lsh_tables,
-        n_functions  = args.lsh_functions,
-        bin_width    = args.lsh_bin_width,
-        seed         = args.seed,
-        **filter_aug_params,
-    )
-    post_results, time_post = post.batch_search(query_vecs, filter_ranges, k=args.k)
-    print(f"    Done in {time_post:.3f}s  "
-          f"({len(post_results) / time_post:.1f} QPS)")
+    
+    if args.method == "postfilter":
+        search_method = PostFilterSearch(
+            base_vecs,
+            labels,
+            k_multiplier = args.k_multiplier,
+            n_tables     = args.lsh_tables,
+            n_functions  = args.lsh_functions,
+            bin_width    = args.lsh_bin_width,
+            seed         = args.seed,
+            **filter_aug_params,
+        )
+    elif args.method == "adaptive":
+        search_method = AdaptiveFilteredSearch(
+            base_vecs,
+            labels,
+            n_labels=args.n_labels,
+            tau_small=args.tau_small,
+            tau_medium=args.tau_medium,
+            n_tables=args.lsh_tables,
+            n_functions=args.lsh_functions,
+            bin_width=args.lsh_bin_width,
+            seed=args.seed,
+            **filter_aug_params,
+        )
+    elif args.method == "label-sorted":
+        # Label-sorted: just use PreFilterSearch for now (exact baseline)
+        search_method = PreFilterSearch(base_vecs, labels)
+    else:
+        raise ValueError(f"Unknown method: {args.method}")
+    
+    results, search_time = search_method.batch_search(query_vecs, filter_ranges, k=args.k)
+    print(f"    Done in {search_time:.3f}s  "
+          f"({len(results) / search_time:.1f} QPS)")
 
     # Candidate-set diagnostics
-    cand_stats = post.candidate_stats(
-        query_vecs[:min(200, Q)], filter_ranges[:min(200, Q)])
-    print(f"\n[LSH candidate stats (first 200 queries)]")
-    for k_s, v_s in cand_stats.items():
-        print(f"    {k_s:<38} {v_s:.2f}" if isinstance(v_s, float)
-              else f"    {k_s:<38} {v_s}")
+    if hasattr(search_method, 'candidate_stats'):
+        cand_stats = search_method.candidate_stats(
+            query_vecs[:min(200, Q)], filter_ranges[:min(200, Q)])
+        print(f"\n[Candidate stats (first 200 queries)]")
+        for k_s, v_s in cand_stats.items():
+            print(f"    {k_s:<38} {v_s:.2f}" if isinstance(v_s, float)
+                  else f"    {k_s:<38} {v_s}")
 
     # ------------------------------------------------------------------
-    # 5. Evaluate and print comparison
+    # 5. Evaluate and log
     # ------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("  Evaluation Results")
+    print("=" * 60)
+    
+    rec = compute_recall(results, gt_results)
+    qps = compute_qps(Q, search_time)
+    final_score = (qps / 100) * (rec["mean_recall"] ** 2)
+    
+    print(f"\nMean Recall@{args.k}:  {rec['mean_recall']:.4f}")
+    print(f"Median Recall@{args.k}: {rec['median_recall']:.4f}")
+    print(f"Min Recall@{args.k}:    {rec['min_recall']:.4f}")
+    print(f"QPS:                  {qps:.1f}")
+    print(f"Final Score:          {final_score:.4f}")
+    
+    # Log to CSV if requested
+    if args.experiment_log:
+        logger = ExperimentLogger(args.experiment_log)
+        
+        # Gather metrics
+        metrics = {
+            'search_time_s': search_time,
+            'qps': qps,
+            'mean_recall': rec['mean_recall'],
+            'median_recall': rec['median_recall'],
+            'min_recall': rec['min_recall'],
+            'max_recall': rec['max_recall'],
+            'final_score': final_score,
+        }
+        
+        # Add candidate stats if available
+        if hasattr(search_method, 'candidate_stats'):
+            cand_stats = search_method.candidate_stats(query_vecs, filter_ranges)
+            for k_s, v_s in cand_stats.items():
+                metrics[k_s] = v_s
+        
+        # Gather hyperparameters
+        hyperparams = {
+            'alpha': args.alpha,
+            'label_dim_ratio': args.label_dim_ratio,
+            'n_tables': args.lsh_tables,
+            'n_functions': args.lsh_functions,
+            'bin_width': args.lsh_bin_width,
+            'tau_small': args.tau_small if args.method == 'adaptive' else '',
+            'tau_medium': args.tau_medium if args.method == 'adaptive' else '',
+            'probe_radius': args.probe_radius,
+        }
+        
+        # Dataset config
+        dataset_config = {
+            'seed': args.seed,
+            'dataset_mode': 'sift' if args.sift else 'synthetic',
+            'n_base': N,
+            'n_query': Q,
+            'k': args.k,
+            'n_labels': args.n_labels,
+            'min_sel': args.min_sel,
+            'max_sel': args.max_sel,
+            'mean_sel': selectivities.mean(),
+        }
+        
+        logger.log_experiment(
+            method=args.method,
+            metrics=metrics,
+            hyperparams=hyperparams,
+            dataset_config=dataset_config,
+            notes=f"Method={args.method}",
+        )
+        print(f"\n✓ Logged to {args.experiment_log}")
+
+    # Print comparison table
     print_comparison(
-        name_a        = "PreFilter",
+        name_a        = "PreFilter(GT)",
         results_a     = gt_results,
         time_a        = time_pre,
-        name_b        = "PostFilter(LSH)",
-        results_b     = post_results,
-        time_b        = time_post,
-        groundtruth   = gt_results,      # pre-filter IS the ground truth
+        name_b        = f"{args.method.upper()}",
+        results_b     = results,
+        time_b        = search_time,
+        groundtruth   = gt_results,
         k             = args.k,
         filter_ranges = filter_ranges,
         n_base        = N,

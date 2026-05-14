@@ -165,35 +165,43 @@ def compute_recall_by_selectivity(
 # ---------------------------------------------------------------------------
 
 def plot_score_with_point(qps, recall, qps_max=200, levels=20):
-    qps_upper = max(qps_max, qps * 1.1 if qps > 0 else qps_max)
+    try:
+        qps_upper = max(qps_max, qps * 1.1 if qps > 0 else qps_max)
 
-    recall_grid = np.linspace(0, 1, 300)
-    qps_grid = np.linspace(0, qps_upper, 300)
-    R, Q = np.meshgrid(recall_grid, qps_grid)
+        recall_grid = np.linspace(0, 1, 300)
+        qps_grid = np.linspace(0, qps_upper, 300)
+        R, Q = np.meshgrid(recall_grid, qps_grid)
 
-    S = (Q / 100) * (R ** 2)
+        S = (Q / 100) * (R ** 2)
 
-    s_point = (qps / 100) * (recall ** 2)
+        s_point = (qps / 100) * (recall ** 2)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    contour = ax.contourf(R, Q, S, levels=levels)
-    plt.colorbar(contour, ax=ax, label='S')
+        fig, ax = plt.subplots(figsize=(8, 6))
+        contour = ax.contourf(R, Q, S, levels=levels)
+        plt.colorbar(contour, ax=ax, label='S')
 
-    ax.scatter(recall, qps, s=120, c="red", marker='x', linewidths=2, label='Input point')
-    ax.annotate(
-        f'Recall={recall:.3f}\nQPS={qps:.1f}\nS={s_point:.4f}',
-        xy=(recall, qps),
-        xytext=(10, 10),
-        textcoords='offset points'
-    )
+        ax.scatter(recall, qps, s=120, c="red", marker='x', linewidths=2, label='Input point')
+        ax.annotate(
+            f'Recall={recall:.3f}\nQPS={qps:.1f}\nS={s_point:.4f}',
+            xy=(recall, qps),
+            xytext=(10, 10),
+            textcoords='offset points'
+        )
 
-    ax.set_xlabel('Recall')
-    ax.set_ylabel('QPS')
-    ax.set_title(r'$S=\frac{QPS}{100}\cdot R^2$')
-    plt.tight_layout()
-    plt.grid(True)
+        ax.set_xlabel('Recall')
+        ax.set_ylabel('QPS')
+        ax.set_title(r'$S=\frac{QPS}{100}\cdot R^2$')
+        plt.tight_layout()
+        plt.grid(True)
 
-    plt.savefig("./final_score.png", dpi=200, bbox_inches='tight')
+        plt.savefig("./final_score.png", dpi=200, bbox_inches='tight')
+        plt.close(fig)
+    except Exception as e:
+        print(f"[Warning] plot_score_with_point failed: {e}")
+        try:
+            plt.close('all')
+        except:
+            pass
 
 def print_comparison(
         name_a: str, results_a: Sequence[np.ndarray], time_a: float,
