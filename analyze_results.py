@@ -14,6 +14,17 @@ from collections import defaultdict
 import statistics
 
 
+def cli_arg_for_param(key):
+    """Map logged hyperparameter names to main.py CLI flags."""
+    if key == 'n_tables':
+        return '--lsh-tables'
+    if key == 'n_functions':
+        return '--lsh-functions'
+    if key == 'bin_width':
+        return '--lsh-bin-width'
+    return f"--{key.replace('_', '-')}"
+
+
 def analyze_results(csv_file):
     """Analyze and print experiment results summary."""
     
@@ -79,7 +90,8 @@ def analyze_results(csv_file):
                     
                     # Build param string
                     params = []
-                    for key in ['alpha', 'n_tables', 'bin_width', 'tau_small', 'tau_medium']:
+                    for key in ['alpha', 'n_tables', 'bin_width', 'tau_small', 'tau_medium',
+                                'hnsw_m', 'hnsw_ef_search', 'candidate_budget']:
                         val = row.get(key, '')
                         if val and val != '':
                             try:
@@ -145,7 +157,9 @@ def analyze_results(csv_file):
         print(f"Search time:   {best_row.get('search_time_s', '?')} seconds")
         print(f"\nHyperparameters:")
         for key in ['alpha', 'label_dim_ratio', 'n_tables', 'n_functions', 'bin_width', 
-                    'tau_small', 'tau_medium', 'probe_radius']:
+                    'tau_small', 'tau_medium', 'adaptive_medium_index', 'hnsw_m',
+                    'hnsw_ef_construction', 'hnsw_ef_search', 'candidate_budget',
+                    'probe_radius']:
             val = best_row.get(key, '')
             if val and val != '':
                 print(f"  {key:<20} = {val}")
@@ -160,10 +174,11 @@ def analyze_results(csv_file):
         print(f"  python main.py \\")
         print(f"    --method {best_row.get('method', '?')} \\")
         for key in ['alpha', 'label_dim_ratio', 'n_tables', 'n_functions', 'bin_width',
-                    'tau_small', 'tau_medium']:
+                    'tau_small', 'tau_medium', 'adaptive_medium_index', 'hnsw_m',
+                    'hnsw_ef_construction', 'hnsw_ef_search', 'candidate_budget']:
             val = best_row.get(key, '')
             if val and val != '':
-                print(f"    --{key.replace('_', '-')} {val} \\")
+                print(f"    {cli_arg_for_param(key)} {val} \\")
         if best_row.get('dataset_mode') == 'sift':
             print(f"    --sift --sift-dir ./data \\")
         print(f"    --seed {best_row.get('seed', '42')}")

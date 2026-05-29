@@ -42,6 +42,11 @@ class ExperimentLogger:
         'bin_width',
         'tau_small',
         'tau_medium',
+        'adaptive_medium_index',
+        'hnsw_m',
+        'hnsw_ef_construction',
+        'hnsw_ef_search',
+        'candidate_budget',
         'probe_radius',
         # Metrics
         'search_time_s',

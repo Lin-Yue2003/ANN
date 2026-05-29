@@ -56,12 +56,14 @@ class AdaptiveFilteredSearch:
         # For medium: use filter-augmented LSH
         lsh_params_medium = lsh_params.copy()
         lsh_params_medium['is_filter_augmented'] = True
+        lsh_params_medium['n_labels'] = n_labels
         self.lsh_medium = PostFilterSearch(base_vecs, labels, **lsh_params_medium)
         
         # For large: use vector-dominant LSH (low alpha to reduce filter emphasis)
         lsh_params_large = lsh_params.copy()
         lsh_params_large['is_filter_augmented'] = True
         lsh_params_large['alpha'] = 0.8  # Mostly vector-based
+        lsh_params_large['n_labels'] = n_labels
         self.lsh_large = PostFilterSearch(base_vecs, labels, **lsh_params_large)
     
     def search(self,

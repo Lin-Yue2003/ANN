@@ -39,6 +39,12 @@ from data_utils   import (load_sift, generate_synthetic_data,
 from prefilter    import PreFilterSearch
 from postfilter   import PostFilterSearch
 from adaptive_search import AdaptiveFilteredSearch
+from hnsw_search import (
+    AdaptiveHNSWSearch,
+    HNSWPostFilterSearch,
+    LabelSortedPreFilterSearch,
+)
+from hnsw_index import HNSWLIB_IMPORT_ERROR
 from experiments.logger import ExperimentLogger
 from evaluate     import print_comparison, compute_recall, compute_qps
 
@@ -100,7 +106,8 @@ def parse_args():
     
     # --- Search method selection ---
     p.add_argument("--method", 
-                   choices=["postfilter", "adaptive", "label-sorted"],
+                   choices=["postfilter", "adaptive", "label-sorted",
+                            "hnsw", "adaptive-hnsw"],
                    default="postfilter",
                    help="Search method to use")
     
@@ -109,6 +116,20 @@ def parse_args():
                    help="Selectivity threshold for small-range exact search")
     p.add_argument("--tau-medium", type=float, default=0.15,
                    help="Selectivity threshold for medium-range LSH search")
+    p.add_argument("--adaptive-medium-index",
+                   choices=["hnsw", "lsh"],
+                   default="hnsw",
+                   help="Medium-selectivity branch for adaptive-hnsw")
+
+    # --- HNSW parameters ---
+    p.add_argument("--hnsw-m", type=int, default=16,
+                   help="HNSW graph degree parameter M")
+    p.add_argument("--hnsw-ef-construction", type=int, default=200,
+                   help="HNSW build-time ef_construction")
+    p.add_argument("--hnsw-ef-search", type=int, default=200,
+                   help="HNSW query-time ef_search")
+    p.add_argument("--candidate-budget", type=int, default=1000,
+                   help="ANN candidates requested before label filtering")
     
     # --- Multi-probe parameters ---
     p.add_argument("--probe-radius", type=int, default=0,
@@ -136,6 +157,14 @@ def main():
     print("\n" + "=" * 60)
     print("  Filtered ANNS Experiment")
     print("=" * 60)
+
+    if args.method in ("hnsw", "adaptive-hnsw") and HNSWLIB_IMPORT_ERROR is not None:
+        print(
+            "\n[error] hnswlib is required for this method.\n"
+            "Install it with: pip install hnswlib\n"
+            "Or run: pip install -r requirements.txt"
+        )
+        raise SystemExit(1)
 
     # ------------------------------------------------------------------
     # 1. Load / generate data
@@ -198,6 +227,10 @@ def main():
         "label_dim_ratio": args.label_dim_ratio,
         "n_labels": args.n_labels,
     }
+    adaptive_filter_aug_params = {
+        key: value for key, value in filter_aug_params.items()
+        if key != "n_labels"
+    }
     
     if args.method == "postfilter":
         search_method = PostFilterSearch(
@@ -221,11 +254,43 @@ def main():
             n_functions=args.lsh_functions,
             bin_width=args.lsh_bin_width,
             seed=args.seed,
-            **filter_aug_params,
+            **adaptive_filter_aug_params,
         )
     elif args.method == "label-sorted":
-        # Label-sorted: just use PreFilterSearch for now (exact baseline)
-        search_method = PreFilterSearch(base_vecs, labels)
+        search_method = LabelSortedPreFilterSearch(
+            base_vecs,
+            labels,
+            n_labels=args.n_labels,
+        )
+    elif args.method == "hnsw":
+        search_method = HNSWPostFilterSearch(
+            base_vecs,
+            labels,
+            n_labels=args.n_labels,
+            hnsw_m=args.hnsw_m,
+            hnsw_ef_construction=args.hnsw_ef_construction,
+            hnsw_ef_search=args.hnsw_ef_search,
+            candidate_budget=args.candidate_budget,
+            seed=args.seed,
+        )
+    elif args.method == "adaptive-hnsw":
+        search_method = AdaptiveHNSWSearch(
+            base_vecs,
+            labels,
+            n_labels=args.n_labels,
+            tau_small=args.tau_small,
+            tau_medium=args.tau_medium,
+            adaptive_medium_index=args.adaptive_medium_index,
+            hnsw_m=args.hnsw_m,
+            hnsw_ef_construction=args.hnsw_ef_construction,
+            hnsw_ef_search=args.hnsw_ef_search,
+            candidate_budget=args.candidate_budget,
+            n_tables=args.lsh_tables,
+            n_functions=args.lsh_functions,
+            bin_width=args.lsh_bin_width,
+            seed=args.seed,
+            **adaptive_filter_aug_params,
+        )
     else:
         raise ValueError(f"Unknown method: {args.method}")
     
@@ -281,14 +346,25 @@ def main():
                 metrics[k_s] = v_s
         
         # Gather hyperparameters
+        uses_lsh = (
+            args.method in ('postfilter', 'adaptive') or
+            (args.method == 'adaptive-hnsw' and args.adaptive_medium_index == 'lsh')
+        )
         hyperparams = {
-            'alpha': args.alpha,
-            'label_dim_ratio': args.label_dim_ratio,
-            'n_tables': args.lsh_tables,
-            'n_functions': args.lsh_functions,
-            'bin_width': args.lsh_bin_width,
-            'tau_small': args.tau_small if args.method == 'adaptive' else '',
-            'tau_medium': args.tau_medium if args.method == 'adaptive' else '',
+            'alpha': args.alpha if uses_lsh else '',
+            'label_dim_ratio': args.label_dim_ratio if uses_lsh else '',
+            'n_tables': args.lsh_tables if uses_lsh else '',
+            'n_functions': args.lsh_functions if uses_lsh else '',
+            'bin_width': args.lsh_bin_width if uses_lsh else '',
+            'tau_small': args.tau_small if args.method in ('adaptive', 'adaptive-hnsw') else '',
+            'tau_medium': args.tau_medium if args.method in ('adaptive', 'adaptive-hnsw') else '',
+            'adaptive_medium_index': args.adaptive_medium_index if args.method == 'adaptive-hnsw' else '',
+            'hnsw_m': args.hnsw_m if args.method in ('hnsw', 'adaptive-hnsw') else '',
+            'hnsw_ef_construction': (
+                args.hnsw_ef_construction if args.method in ('hnsw', 'adaptive-hnsw') else ''
+            ),
+            'hnsw_ef_search': args.hnsw_ef_search if args.method in ('hnsw', 'adaptive-hnsw') else '',
+            'candidate_budget': args.candidate_budget if args.method in ('hnsw', 'adaptive-hnsw') else '',
             'probe_radius': args.probe_radius,
         }
         
