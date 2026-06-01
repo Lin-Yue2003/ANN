@@ -195,37 +195,23 @@ def generate_full_sweep_configs() -> List[Dict[str, Any]]:
 
 def generate_hnsw_ablation_configs() -> List[Dict[str, Any]]:
     """
-    Focused HNSW ablation: first compare methods, then sweep the most
-    important parameters for the new variants.
+    Focused HNSW ablation.
+
+    Excludes hnsw-dynamic from the main sweep because it can call hnswlib
+    multiple times for one query while expanding the budget, which destroys QPS
+    on full runs.
     """
     configs = [
         # Method ablation controls
         {'method': 'hnsw', 'hnsw_ef_search': 400, 'candidate_budget': 1000},
         {'method': 'adaptive-hnsw', 'tau_small': 0.01, 'tau_medium': 0.15,
          'hnsw_ef_search': 400, 'candidate_budget': 1000},
-        {'method': 'hnsw-dynamic', 'hnsw_ef_search': 400, 'initial_candidate_budget': 200,
-         'candidate_budget': 2000, 'budget_expansion_factor': 2.0,
-         'min_survivors_multiplier': 2.0},
         {'method': 'hnsw-filter-aug', 'hnsw_ef_search': 400, 'candidate_budget': 1000,
          'hnsw_alpha': 0.6, 'hnsw_label_dim_ratio': 0.05},
         {'method': 'adaptive-hnsw-aug', 'tau_small': 0.01, 'tau_medium': 0.15,
          'hnsw_ef_search': 400, 'candidate_budget': 1000,
          'hnsw_alpha': 0.6, 'hnsw_label_dim_ratio': 0.05},
     ]
-
-    # Dynamic budget parameter sweep
-    for ef_search in [200, 400, 800]:
-        for initial_budget in [100, 200, 500]:
-            for max_budget in [1000, 2000]:
-                for min_survivors in [1.0, 2.0, 4.0]:
-                    configs.append({
-                        'method': 'hnsw-dynamic',
-                        'hnsw_ef_search': ef_search,
-                        'initial_candidate_budget': initial_budget,
-                        'candidate_budget': max_budget,
-                        'budget_expansion_factor': 2.0,
-                        'min_survivors_multiplier': min_survivors,
-                    })
 
     # Filter-augmented HNSW parameter sweep
     for ef_search in [200, 400, 800]:

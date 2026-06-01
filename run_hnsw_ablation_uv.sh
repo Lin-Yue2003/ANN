@@ -4,6 +4,8 @@ set -euo pipefail
 # HNSW ablation runner for uv environments.
 # This uses hnsw_ablation_runner.py so data loading, label generation,
 # filter range generation, and exact ground truth are done once per run.
+# The main sweep intentionally excludes hnsw-dynamic because that method
+# expands candidate budgets by repeating hnswlib queries for the same query.
 #
 # Default dataset:
 #   --sift --max-base 100000 --n-query 1000

@@ -27,7 +27,6 @@ from hnsw_index import HNSWLIB_IMPORT_ERROR
 from hnsw_search import (
     AdaptiveHNSWAugmentedSearch,
     AdaptiveHNSWSearch,
-    HNSWDynamicBudgetSearch,
     HNSWFilterAugmentedSearch,
     HNSWPostFilterSearch,
     LabelSortedPreFilterSearch,
@@ -199,21 +198,6 @@ def build_search_method(cfg, base_vecs, labels, args):
             hnsw_ef_construction=hnsw_ef_construction,
             hnsw_ef_search=hnsw_ef_search,
             candidate_budget=candidate_budget,
-            seed=args.seed,
-        )
-
-    if method == "hnsw-dynamic":
-        return HNSWDynamicBudgetSearch(
-            base_vecs,
-            labels,
-            n_labels=args.n_labels,
-            hnsw_m=hnsw_m,
-            hnsw_ef_construction=hnsw_ef_construction,
-            hnsw_ef_search=hnsw_ef_search,
-            candidate_budget=candidate_budget,
-            initial_candidate_budget=int(cfg.get("initial_candidate_budget", 200)),
-            budget_expansion_factor=float(cfg.get("budget_expansion_factor", 2.0)),
-            min_survivors_multiplier=float(cfg.get("min_survivors_multiplier", 2.0)),
             seed=args.seed,
         )
 
