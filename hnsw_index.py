@@ -98,12 +98,15 @@ class HNSWIndex:
         self,
         query_vecs: np.ndarray,
         candidate_budget: int | None = None,
+        ef_search: int | None = None,
     ) -> list[np.ndarray]:
         """Return one candidate-id array per query."""
         if not self._built:
             raise RuntimeError("HNSWIndex.build() must be called before querying")
 
         k = self._effective_k(candidate_budget)
+        if ef_search is not None:
+            self.set_ef_search(ef_search, candidate_budget=k)
         query_vecs = np.ascontiguousarray(query_vecs, dtype=np.float32)
         labels, _ = self.index.knn_query(
             query_vecs,
@@ -111,6 +114,16 @@ class HNSWIndex:
             num_threads=self.num_threads,
         )
         return [row.astype(np.int32, copy=False) for row in labels]
+
+    def set_ef_search(
+        self,
+        ef_search: int,
+        candidate_budget: int | None = None,
+    ) -> None:
+        """Update query-time ef without rebuilding the graph."""
+        self.ef_search = int(ef_search)
+        ef = max(self.ef_search, self._effective_k(candidate_budget))
+        self.index.set_ef(ef)
 
     def _effective_k(self, candidate_budget: int | None) -> int:
         budget = self.candidate_budget if candidate_budget is None else candidate_budget

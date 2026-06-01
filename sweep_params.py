@@ -246,6 +246,30 @@ def generate_hnsw_ablation_configs() -> List[Dict[str, Any]]:
     return configs
 
 
+def generate_hnsw_ablation_v2_configs() -> List[Dict[str, Any]]:
+    """
+    Focused v2 search around the best full-run region.
+
+    The best v1 config was hnsw-filter-aug with a small candidate budget,
+    high vector weight, and tiny label dimension ratio. These configs are
+    intended for the v2 runner, which reuses each augmented graph across
+    ef_search and candidate_budget values.
+    """
+    configs = []
+    for hnsw_alpha in [0.65, 0.75, 0.85, 0.90, 0.95]:
+        for label_dim_ratio in [0.005, 0.01, 0.02]:
+            for ef_search in [200, 300, 400, 500]:
+                for candidate_budget in [300, 400, 500, 600, 800]:
+                    configs.append({
+                        'method': 'hnsw-filter-aug',
+                        'hnsw_ef_search': ef_search,
+                        'candidate_budget': candidate_budget,
+                        'hnsw_alpha': hnsw_alpha,
+                        'hnsw_label_dim_ratio': label_dim_ratio,
+                    })
+    return configs
+
+
 def generate_shell_commands(configs: List[Dict[str, Any]], 
                            base_args: str = "",
                            output_log: str = "experiments/results.csv") -> List[str]:
@@ -287,7 +311,7 @@ if __name__ == "__main__":
     import sys
     
     if len(sys.argv) < 2:
-        print("Usage: python sweep_params.py {baseline|small|full|hnsw-ablation} [base_args]")
+        print("Usage: python sweep_params.py {baseline|small|full|hnsw-ablation|hnsw-ablation-v2} [base_args]")
         print("  base_args: e.g., '--sift --sift-dir ./data'")
         sys.exit(1)
     
@@ -302,6 +326,8 @@ if __name__ == "__main__":
         configs = generate_full_sweep_configs()
     elif sweep_type == 'hnsw-ablation':
         configs = generate_hnsw_ablation_configs()
+    elif sweep_type == 'hnsw-ablation-v2':
+        configs = generate_hnsw_ablation_v2_configs()
     else:
         print(f"Unknown sweep type: {sweep_type}")
         sys.exit(1)
