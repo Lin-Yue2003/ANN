@@ -41,6 +41,9 @@ from postfilter   import PostFilterSearch
 from adaptive_search import AdaptiveFilteredSearch
 from hnsw_search import (
     AdaptiveHNSWSearch,
+    AdaptiveHNSWAugmentedSearch,
+    HNSWDynamicBudgetSearch,
+    HNSWFilterAugmentedSearch,
     HNSWPostFilterSearch,
     LabelSortedPreFilterSearch,
 )
@@ -107,7 +110,8 @@ def parse_args():
     # --- Search method selection ---
     p.add_argument("--method", 
                    choices=["postfilter", "adaptive", "label-sorted",
-                            "hnsw", "adaptive-hnsw"],
+                            "hnsw", "adaptive-hnsw", "hnsw-dynamic",
+                            "hnsw-filter-aug", "adaptive-hnsw-aug"],
                    default="postfilter",
                    help="Search method to use")
     
@@ -130,6 +134,16 @@ def parse_args():
                    help="HNSW query-time ef_search")
     p.add_argument("--candidate-budget", type=int, default=1000,
                    help="ANN candidates requested before label filtering")
+    p.add_argument("--initial-candidate-budget", type=int, default=200,
+                   help="Initial candidate budget for hnsw-dynamic")
+    p.add_argument("--budget-expansion-factor", type=float, default=2.0,
+                   help="Candidate budget multiplier for hnsw-dynamic")
+    p.add_argument("--min-survivors-multiplier", type=float, default=2.0,
+                   help="Target filtered survivors as a multiple of k for hnsw-dynamic")
+    p.add_argument("--hnsw-alpha", type=float, default=0.6,
+                   help="Vector weight for filter-augmented HNSW")
+    p.add_argument("--hnsw-label-dim-ratio", type=float, default=0.05,
+                   help="Label-feature dimensions as a ratio of vector dim for filter-augmented HNSW")
     
     # --- Multi-probe parameters ---
     p.add_argument("--probe-radius", type=int, default=0,
@@ -158,7 +172,14 @@ def main():
     print("  Filtered ANNS Experiment")
     print("=" * 60)
 
-    if args.method in ("hnsw", "adaptive-hnsw") and HNSWLIB_IMPORT_ERROR is not None:
+    hnsw_methods = {
+        "hnsw",
+        "adaptive-hnsw",
+        "hnsw-dynamic",
+        "hnsw-filter-aug",
+        "adaptive-hnsw-aug",
+    }
+    if args.method in hnsw_methods and HNSWLIB_IMPORT_ERROR is not None:
         print(
             "\n[error] hnswlib is required for this method.\n"
             "Install it with: pip install hnswlib\n"
@@ -273,6 +294,33 @@ def main():
             candidate_budget=args.candidate_budget,
             seed=args.seed,
         )
+    elif args.method == "hnsw-dynamic":
+        search_method = HNSWDynamicBudgetSearch(
+            base_vecs,
+            labels,
+            n_labels=args.n_labels,
+            hnsw_m=args.hnsw_m,
+            hnsw_ef_construction=args.hnsw_ef_construction,
+            hnsw_ef_search=args.hnsw_ef_search,
+            candidate_budget=args.candidate_budget,
+            initial_candidate_budget=args.initial_candidate_budget,
+            budget_expansion_factor=args.budget_expansion_factor,
+            min_survivors_multiplier=args.min_survivors_multiplier,
+            seed=args.seed,
+        )
+    elif args.method == "hnsw-filter-aug":
+        search_method = HNSWFilterAugmentedSearch(
+            base_vecs,
+            labels,
+            n_labels=args.n_labels,
+            hnsw_m=args.hnsw_m,
+            hnsw_ef_construction=args.hnsw_ef_construction,
+            hnsw_ef_search=args.hnsw_ef_search,
+            candidate_budget=args.candidate_budget,
+            hnsw_alpha=args.hnsw_alpha,
+            hnsw_label_dim_ratio=args.hnsw_label_dim_ratio,
+            seed=args.seed,
+        )
     elif args.method == "adaptive-hnsw":
         search_method = AdaptiveHNSWSearch(
             base_vecs,
@@ -290,6 +338,21 @@ def main():
             bin_width=args.lsh_bin_width,
             seed=args.seed,
             **adaptive_filter_aug_params,
+        )
+    elif args.method == "adaptive-hnsw-aug":
+        search_method = AdaptiveHNSWAugmentedSearch(
+            base_vecs,
+            labels,
+            n_labels=args.n_labels,
+            tau_small=args.tau_small,
+            tau_medium=args.tau_medium,
+            hnsw_m=args.hnsw_m,
+            hnsw_ef_construction=args.hnsw_ef_construction,
+            hnsw_ef_search=args.hnsw_ef_search,
+            candidate_budget=args.candidate_budget,
+            hnsw_alpha=args.hnsw_alpha,
+            hnsw_label_dim_ratio=args.hnsw_label_dim_ratio,
+            seed=args.seed,
         )
     else:
         raise ValueError(f"Unknown method: {args.method}")
@@ -350,6 +413,9 @@ def main():
             args.method in ('postfilter', 'adaptive') or
             (args.method == 'adaptive-hnsw' and args.adaptive_medium_index == 'lsh')
         )
+        uses_hnsw = args.method in hnsw_methods
+        uses_dynamic_budget = args.method == 'hnsw-dynamic'
+        uses_hnsw_filter_aug = args.method in ('hnsw-filter-aug', 'adaptive-hnsw-aug')
         hyperparams = {
             'alpha': args.alpha if uses_lsh else '',
             'label_dim_ratio': args.label_dim_ratio if uses_lsh else '',
@@ -359,12 +425,17 @@ def main():
             'tau_small': args.tau_small if args.method in ('adaptive', 'adaptive-hnsw') else '',
             'tau_medium': args.tau_medium if args.method in ('adaptive', 'adaptive-hnsw') else '',
             'adaptive_medium_index': args.adaptive_medium_index if args.method == 'adaptive-hnsw' else '',
-            'hnsw_m': args.hnsw_m if args.method in ('hnsw', 'adaptive-hnsw') else '',
+            'hnsw_m': args.hnsw_m if uses_hnsw else '',
             'hnsw_ef_construction': (
-                args.hnsw_ef_construction if args.method in ('hnsw', 'adaptive-hnsw') else ''
+                args.hnsw_ef_construction if uses_hnsw else ''
             ),
-            'hnsw_ef_search': args.hnsw_ef_search if args.method in ('hnsw', 'adaptive-hnsw') else '',
-            'candidate_budget': args.candidate_budget if args.method in ('hnsw', 'adaptive-hnsw') else '',
+            'hnsw_ef_search': args.hnsw_ef_search if uses_hnsw else '',
+            'candidate_budget': args.candidate_budget if uses_hnsw else '',
+            'initial_candidate_budget': args.initial_candidate_budget if uses_dynamic_budget else '',
+            'budget_expansion_factor': args.budget_expansion_factor if uses_dynamic_budget else '',
+            'min_survivors_multiplier': args.min_survivors_multiplier if uses_dynamic_budget else '',
+            'hnsw_alpha': args.hnsw_alpha if uses_hnsw_filter_aug else '',
+            'hnsw_label_dim_ratio': args.hnsw_label_dim_ratio if uses_hnsw_filter_aug else '',
             'probe_radius': args.probe_radius,
         }
         
