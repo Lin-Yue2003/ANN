@@ -193,6 +193,73 @@ def generate_full_sweep_configs() -> List[Dict[str, Any]]:
     return configs
 
 
+def generate_hnsw_ablation_configs() -> List[Dict[str, Any]]:
+    """
+    Focused HNSW ablation: first compare methods, then sweep the most
+    important parameters for the new variants.
+    """
+    configs = [
+        # Method ablation controls
+        {'method': 'hnsw', 'hnsw_ef_search': 400, 'candidate_budget': 1000},
+        {'method': 'adaptive-hnsw', 'tau_small': 0.01, 'tau_medium': 0.15,
+         'hnsw_ef_search': 400, 'candidate_budget': 1000},
+        {'method': 'hnsw-dynamic', 'hnsw_ef_search': 400, 'initial_candidate_budget': 200,
+         'candidate_budget': 2000, 'budget_expansion_factor': 2.0,
+         'min_survivors_multiplier': 2.0},
+        {'method': 'hnsw-filter-aug', 'hnsw_ef_search': 400, 'candidate_budget': 1000,
+         'hnsw_alpha': 0.6, 'hnsw_label_dim_ratio': 0.05},
+        {'method': 'adaptive-hnsw-aug', 'tau_small': 0.01, 'tau_medium': 0.15,
+         'hnsw_ef_search': 400, 'candidate_budget': 1000,
+         'hnsw_alpha': 0.6, 'hnsw_label_dim_ratio': 0.05},
+    ]
+
+    # Dynamic budget parameter sweep
+    for ef_search in [200, 400, 800]:
+        for initial_budget in [100, 200, 500]:
+            for max_budget in [1000, 2000]:
+                for min_survivors in [1.0, 2.0, 4.0]:
+                    configs.append({
+                        'method': 'hnsw-dynamic',
+                        'hnsw_ef_search': ef_search,
+                        'initial_candidate_budget': initial_budget,
+                        'candidate_budget': max_budget,
+                        'budget_expansion_factor': 2.0,
+                        'min_survivors_multiplier': min_survivors,
+                    })
+
+    # Filter-augmented HNSW parameter sweep
+    for ef_search in [200, 400, 800]:
+        for candidate_budget in [500, 1000, 2000]:
+            for hnsw_alpha in [0.3, 0.5, 0.7, 0.9]:
+                for label_dim_ratio in [0.01, 0.05, 0.10]:
+                    configs.append({
+                        'method': 'hnsw-filter-aug',
+                        'hnsw_ef_search': ef_search,
+                        'candidate_budget': candidate_budget,
+                        'hnsw_alpha': hnsw_alpha,
+                        'hnsw_label_dim_ratio': label_dim_ratio,
+                    })
+
+    # Adaptive augmented routing parameter sweep
+    for tau_small in [0.005, 0.01, 0.02]:
+        for tau_medium in [0.10, 0.15, 0.20, 0.30]:
+            if tau_small >= tau_medium:
+                continue
+            for candidate_budget in [1000, 2000]:
+                for hnsw_alpha in [0.5, 0.7, 0.9]:
+                    configs.append({
+                        'method': 'adaptive-hnsw-aug',
+                        'tau_small': tau_small,
+                        'tau_medium': tau_medium,
+                        'hnsw_ef_search': 400,
+                        'candidate_budget': candidate_budget,
+                        'hnsw_alpha': hnsw_alpha,
+                        'hnsw_label_dim_ratio': 0.05,
+                    })
+
+    return configs
+
+
 def generate_shell_commands(configs: List[Dict[str, Any]], 
                            base_args: str = "",
                            output_log: str = "experiments/results.csv") -> List[str]:
@@ -234,7 +301,7 @@ if __name__ == "__main__":
     import sys
     
     if len(sys.argv) < 2:
-        print("Usage: python sweep_params.py {baseline|small|full} [base_args]")
+        print("Usage: python sweep_params.py {baseline|small|full|hnsw-ablation} [base_args]")
         print("  base_args: e.g., '--sift --sift-dir ./data'")
         sys.exit(1)
     
@@ -247,6 +314,8 @@ if __name__ == "__main__":
         configs = generate_small_sweep_configs()
     elif sweep_type == 'full':
         configs = generate_full_sweep_configs()
+    elif sweep_type == 'hnsw-ablation':
+        configs = generate_hnsw_ablation_configs()
     else:
         print(f"Unknown sweep type: {sweep_type}")
         sys.exit(1)

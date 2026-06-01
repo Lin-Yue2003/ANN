@@ -91,7 +91,8 @@ def analyze_results(csv_file):
                     # Build param string
                     params = []
                     for key in ['alpha', 'n_tables', 'bin_width', 'tau_small', 'tau_medium',
-                                'hnsw_m', 'hnsw_ef_search', 'candidate_budget']:
+                                'hnsw_m', 'hnsw_ef_search', 'candidate_budget',
+                                'initial_candidate_budget', 'hnsw_alpha']:
                         val = row.get(key, '')
                         if val and val != '':
                             try:
@@ -159,6 +160,8 @@ def analyze_results(csv_file):
         for key in ['alpha', 'label_dim_ratio', 'n_tables', 'n_functions', 'bin_width', 
                     'tau_small', 'tau_medium', 'adaptive_medium_index', 'hnsw_m',
                     'hnsw_ef_construction', 'hnsw_ef_search', 'candidate_budget',
+                    'initial_candidate_budget', 'budget_expansion_factor',
+                    'min_survivors_multiplier', 'hnsw_alpha', 'hnsw_label_dim_ratio',
                     'probe_radius']:
             val = best_row.get(key, '')
             if val and val != '':
@@ -175,7 +178,9 @@ def analyze_results(csv_file):
         print(f"    --method {best_row.get('method', '?')} \\")
         for key in ['alpha', 'label_dim_ratio', 'n_tables', 'n_functions', 'bin_width',
                     'tau_small', 'tau_medium', 'adaptive_medium_index', 'hnsw_m',
-                    'hnsw_ef_construction', 'hnsw_ef_search', 'candidate_budget']:
+                    'hnsw_ef_construction', 'hnsw_ef_search', 'candidate_budget',
+                    'initial_candidate_budget', 'budget_expansion_factor',
+                    'min_survivors_multiplier', 'hnsw_alpha', 'hnsw_label_dim_ratio']:
             val = best_row.get(key, '')
             if val and val != '':
                 print(f"    {cli_arg_for_param(key)} {val} \\")

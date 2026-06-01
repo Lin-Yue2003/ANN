@@ -47,6 +47,11 @@ class ExperimentLogger:
         'hnsw_ef_construction',
         'hnsw_ef_search',
         'candidate_budget',
+        'initial_candidate_budget',
+        'budget_expansion_factor',
+        'min_survivors_multiplier',
+        'hnsw_alpha',
+        'hnsw_label_dim_ratio',
         'probe_radius',
         # Metrics
         'search_time_s',
