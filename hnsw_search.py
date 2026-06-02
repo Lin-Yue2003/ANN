@@ -334,6 +334,249 @@ class HNSWFilterAugmentedSearch(HNSWPostFilterSearch):
         ]).astype(np.float32, copy=False)
 
 
+class HNSWFilterAugmentedAdaptiveBudgetSearch(HNSWFilterAugmentedSearch):
+    """
+    Filter-augmented HNSW with one fixed budget per selectivity bucket.
+
+    This avoids hnsw-dynamic's repeated per-query HNSW calls. Each query is
+    routed once into a small/medium/large selectivity batch, and each batch
+    uses a different candidate_budget.
+    """
+
+    def __init__(
+        self,
+        base_vecs: np.ndarray,
+        labels: np.ndarray,
+        n_labels: int,
+        hnsw_m: int = 16,
+        hnsw_ef_construction: int = 200,
+        hnsw_ef_search: int = 200,
+        candidate_budget: int = 1000,
+        hnsw_alpha: float = 0.6,
+        hnsw_label_dim_ratio: float = 0.05,
+        adaptive_budget_tau_small: float = 0.10,
+        adaptive_budget_tau_medium: float = 0.20,
+        adaptive_budget_small: int = 400,
+        adaptive_budget_medium: int = 250,
+        adaptive_budget_large: int = 120,
+        seed: int = 42,
+    ):
+        self.adaptive_budget_tau_small = adaptive_budget_tau_small
+        self.adaptive_budget_tau_medium = adaptive_budget_tau_medium
+        self.adaptive_budget_small = adaptive_budget_small
+        self.adaptive_budget_medium = adaptive_budget_medium
+        self.adaptive_budget_large = adaptive_budget_large
+        super().__init__(
+            base_vecs=base_vecs,
+            labels=labels,
+            n_labels=n_labels,
+            hnsw_m=hnsw_m,
+            hnsw_ef_construction=hnsw_ef_construction,
+            hnsw_ef_search=hnsw_ef_search,
+            candidate_budget=max(
+                candidate_budget,
+                adaptive_budget_small,
+                adaptive_budget_medium,
+                adaptive_budget_large,
+            ),
+            hnsw_alpha=hnsw_alpha,
+            hnsw_label_dim_ratio=hnsw_label_dim_ratio,
+            seed=seed,
+        )
+
+    def batch_search(
+        self,
+        query_vecs: np.ndarray,
+        filter_ranges: np.ndarray,
+        k: int = 10,
+    ) -> tuple[list[np.ndarray], float]:
+        t0 = time.perf_counter()
+        all_candidates = self._adaptive_candidate_arrays(query_vecs, filter_ranges)
+        results = []
+        for query, candidates, (lo, hi) in zip(query_vecs, all_candidates, filter_ranges):
+            results.append(self._filter_and_rerank(query, candidates, int(lo), int(hi), k))
+        return results, time.perf_counter() - t0
+
+    def candidate_stats(self, query_vecs: np.ndarray, filter_ranges: np.ndarray) -> dict:
+        all_candidates = self._adaptive_candidate_arrays(query_vecs, filter_ranges)
+        return _candidate_stats_from_arrays(all_candidates, self.labels, filter_ranges)
+
+    def _adaptive_candidate_arrays(
+        self,
+        query_vecs: np.ndarray,
+        filter_ranges: np.ndarray,
+    ) -> list[np.ndarray]:
+        selectivities = (filter_ranges[:, 1] - filter_ranges[:, 0] + 1) / self.n_labels
+        small = selectivities <= self.adaptive_budget_tau_small
+        medium = (
+            (selectivities > self.adaptive_budget_tau_small) &
+            (selectivities <= self.adaptive_budget_tau_medium)
+        )
+        large = selectivities > self.adaptive_budget_tau_medium
+
+        all_candidates: list[np.ndarray | None] = [None] * len(query_vecs)
+        for mask, budget in (
+            (small, self.adaptive_budget_small),
+            (medium, self.adaptive_budget_medium),
+            (large, self.adaptive_budget_large),
+        ):
+            idx = np.where(mask)[0]
+            if len(idx) == 0:
+                continue
+            augmented_queries = self._augment_query(query_vecs[idx], filter_ranges[idx])
+            group_candidates = self.hnsw.batch_query(
+                augmented_queries,
+                candidate_budget=budget,
+                ef_search=self.hnsw.ef_search,
+            )
+            for pos, query_idx in enumerate(idx):
+                all_candidates[int(query_idx)] = group_candidates[pos]
+
+        return [
+            c if c is not None else np.array([], dtype=np.int32)
+            for c in all_candidates
+        ]
+
+
+class LabelShardedHNSWSearch(HNSWPostFilterSearch):
+    """
+    Build one HNSW per contiguous label shard and query only overlapping shards.
+
+    Final label filtering and exact L2 reranking remain unchanged. This mode is
+    meant to reduce candidate waste and graph size under single-thread HNSW.
+    """
+
+    def __init__(
+        self,
+        base_vecs: np.ndarray,
+        labels: np.ndarray,
+        n_labels: int,
+        hnsw_n_shards: int = 20,
+        hnsw_m: int = 16,
+        hnsw_ef_construction: int = 200,
+        hnsw_ef_search: int = 200,
+        candidate_budget: int = 300,
+        shard_min_budget: int = 20,
+        seed: int = 42,
+    ):
+        self.base_vecs = np.ascontiguousarray(base_vecs, dtype=np.float32)
+        self.labels = labels.astype(np.int32, copy=False)
+        self.n_labels = n_labels
+        self.N, self.D = self.base_vecs.shape
+        self.hnsw_n_shards = max(1, int(hnsw_n_shards))
+        self.hnsw_ef_search = hnsw_ef_search
+        self.candidate_budget = candidate_budget
+        self.shard_min_budget = shard_min_budget
+        self.shards = []
+
+        boundaries = np.linspace(0, n_labels, self.hnsw_n_shards + 1, dtype=np.int32)
+        print(
+            f"[LabelShardedHNSW] Building {self.hnsw_n_shards} label-shard graphs "
+            f"over {self.N:,} vectors ..."
+        )
+        t0 = time.perf_counter()
+        for shard_idx, (start_label, stop_label) in enumerate(zip(boundaries[:-1], boundaries[1:])):
+            lo = int(start_label)
+            hi = int(stop_label) - 1
+            ids = np.where((self.labels >= lo) & (self.labels <= hi))[0].astype(np.int32)
+            if len(ids) == 0:
+                self.shards.append(None)
+                continue
+            hnsw = HNSWIndex(
+                dim=self.D,
+                m=hnsw_m,
+                ef_construction=hnsw_ef_construction,
+                ef_search=hnsw_ef_search,
+                candidate_budget=min(candidate_budget, len(ids)),
+                seed=seed + shard_idx,
+            )
+            hnsw.build(self.base_vecs[ids])
+            self.shards.append({
+                "lo": lo,
+                "hi": hi,
+                "ids": ids,
+                "hnsw": hnsw,
+            })
+        print(f"[LabelShardedHNSW] Built in {time.perf_counter() - t0:.2f}s")
+
+    def batch_search(
+        self,
+        query_vecs: np.ndarray,
+        filter_ranges: np.ndarray,
+        k: int = 10,
+    ) -> tuple[list[np.ndarray], float]:
+        t0 = time.perf_counter()
+        all_candidates = self._candidate_arrays(query_vecs, filter_ranges)
+        results = []
+        for query, candidates, (lo, hi) in zip(query_vecs, all_candidates, filter_ranges):
+            results.append(self._filter_and_rerank(query, candidates, int(lo), int(hi), k))
+        return results, time.perf_counter() - t0
+
+    def candidate_stats(self, query_vecs: np.ndarray, filter_ranges: np.ndarray) -> dict:
+        return _candidate_stats_from_arrays(
+            self._candidate_arrays(query_vecs, filter_ranges),
+            self.labels,
+            filter_ranges,
+        )
+
+    def _candidate_arrays(
+        self,
+        query_vecs: np.ndarray,
+        filter_ranges: np.ndarray | None = None,
+    ) -> list[np.ndarray]:
+        if filter_ranges is None:
+            raise ValueError("filter_ranges are required for LabelShardedHNSWSearch")
+
+        candidates_by_query: list[list[np.ndarray]] = [[] for _ in range(len(query_vecs))]
+        groups: dict[tuple[int, int], list[int]] = {}
+        for query_idx, (lo, hi) in enumerate(filter_ranges):
+            shard_indices = self._overlapping_shards(int(lo), int(hi))
+            if not shard_indices:
+                continue
+            budget = max(
+                1,
+                min(
+                    self.candidate_budget,
+                    max(self.shard_min_budget, int(np.ceil(self.candidate_budget / len(shard_indices)))),
+                ),
+            )
+            for shard_idx in shard_indices:
+                groups.setdefault((shard_idx, budget), []).append(query_idx)
+
+        for (shard_idx, budget), query_indices in groups.items():
+            shard = self.shards[shard_idx]
+            if shard is None:
+                continue
+            idx = np.array(query_indices, dtype=np.int32)
+            local_budget = min(budget, len(shard["ids"]))
+            local_candidates = shard["hnsw"].batch_query(
+                query_vecs[idx],
+                candidate_budget=local_budget,
+                ef_search=self.hnsw_ef_search,
+            )
+            for pos, query_idx in enumerate(query_indices):
+                candidates_by_query[query_idx].append(shard["ids"][local_candidates[pos]])
+
+        merged = []
+        for parts in candidates_by_query:
+            if not parts:
+                merged.append(np.array([], dtype=np.int32))
+            elif len(parts) == 1:
+                merged.append(parts[0].astype(np.int32, copy=False))
+            else:
+                merged.append(np.unique(np.concatenate(parts)).astype(np.int32, copy=False))
+        return merged
+
+    def _overlapping_shards(self, lo: int, hi: int) -> list[int]:
+        out = []
+        for idx, shard in enumerate(self.shards):
+            if shard is None:
+                continue
+            if shard["hi"] >= lo and shard["lo"] <= hi:
+                out.append(idx)
+        return out
+
+
 def _candidate_stats_from_arrays(
     all_candidates: list[np.ndarray],
     labels: np.ndarray,

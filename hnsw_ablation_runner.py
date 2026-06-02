@@ -28,8 +28,10 @@ from hnsw_index import HNSWLIB_IMPORT_ERROR
 from hnsw_search import (
     AdaptiveHNSWAugmentedSearch,
     AdaptiveHNSWSearch,
+    HNSWFilterAugmentedAdaptiveBudgetSearch,
     HNSWFilterAugmentedSearch,
     HNSWPostFilterSearch,
+    LabelShardedHNSWSearch,
     LabelSortedPreFilterSearch,
 )
 from postfilter import PostFilterSearch
@@ -56,6 +58,9 @@ def parse_args():
                    help="Run only the first N configs for sanity checks")
     p.add_argument("--candidate-stats-limit", type=int, default=200,
                    help="Number of queries used for candidate diagnostics per config")
+    p.add_argument("--sweep", choices=["hnsw-ablation", "hnsw-single-thread"],
+                   default="hnsw-ablation",
+                   help="Config set to run. hnsw-single-thread adds new single-thread-focused modes.")
     return p.parse_args()
 
 
@@ -100,7 +105,11 @@ def main():
     gt_results, gt_time = pre.batch_search(query_vecs, filter_ranges, k=args.k)
     print(f"[Ground Truth] Done in {gt_time:.3f}s ({n_query / gt_time:.1f} QPS)")
 
-    configs = generate_hnsw_ablation_configs()
+    if args.sweep == "hnsw-single-thread":
+        from sweep_params import generate_hnsw_single_thread_configs
+        configs = generate_hnsw_single_thread_configs()
+    else:
+        configs = generate_hnsw_ablation_configs()
     if args.limit_configs is not None:
         configs = configs[:args.limit_configs]
 
@@ -216,6 +225,39 @@ def build_search_method(cfg, base_vecs, labels, args):
             seed=args.seed,
         )
 
+    if method == "hnsw-filter-aug-budget":
+        return HNSWFilterAugmentedAdaptiveBudgetSearch(
+            base_vecs,
+            labels,
+            n_labels=args.n_labels,
+            hnsw_m=hnsw_m,
+            hnsw_ef_construction=hnsw_ef_construction,
+            hnsw_ef_search=hnsw_ef_search,
+            candidate_budget=candidate_budget,
+            hnsw_alpha=float(cfg.get("hnsw_alpha", 0.6)),
+            hnsw_label_dim_ratio=float(cfg.get("hnsw_label_dim_ratio", 0.05)),
+            adaptive_budget_tau_small=float(cfg.get("adaptive_budget_tau_small", 0.10)),
+            adaptive_budget_tau_medium=float(cfg.get("adaptive_budget_tau_medium", 0.20)),
+            adaptive_budget_small=int(cfg.get("adaptive_budget_small", 400)),
+            adaptive_budget_medium=int(cfg.get("adaptive_budget_medium", 250)),
+            adaptive_budget_large=int(cfg.get("adaptive_budget_large", 120)),
+            seed=args.seed,
+        )
+
+    if method == "hnsw-label-shards":
+        return LabelShardedHNSWSearch(
+            base_vecs,
+            labels,
+            n_labels=args.n_labels,
+            hnsw_n_shards=int(cfg.get("hnsw_n_shards", 20)),
+            hnsw_m=hnsw_m,
+            hnsw_ef_construction=hnsw_ef_construction,
+            hnsw_ef_search=hnsw_ef_search,
+            candidate_budget=candidate_budget,
+            shard_min_budget=int(cfg.get("shard_min_budget", 20)),
+            seed=args.seed,
+        )
+
     if method == "adaptive-hnsw":
         return AdaptiveHNSWSearch(
             base_vecs,
@@ -302,6 +344,13 @@ def hyperparams_for_log(cfg):
         "min_survivors_multiplier",
         "hnsw_alpha",
         "hnsw_label_dim_ratio",
+        "adaptive_budget_tau_small",
+        "adaptive_budget_tau_medium",
+        "adaptive_budget_small",
+        "adaptive_budget_medium",
+        "adaptive_budget_large",
+        "hnsw_n_shards",
+        "shard_min_budget",
         "probe_radius",
     ]
     return {field: cfg.get(field, "") for field in fields}

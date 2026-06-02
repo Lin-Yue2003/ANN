@@ -163,6 +163,18 @@ uv run -m main \
 | `--tau-medium` | `0.15` | adaptive method 的 medium/large 門檻 |
 | `--adaptive-medium-index` | `hnsw` | `adaptive-hnsw` 的 medium 分支，可選 `hnsw` 或 `lsh` |
 
+### Follow-up ablation variables
+
+| CLI | Default | 說明 |
+|---|---:|---|
+| `--adaptive-budget-tau-small` | `0.10` | `hnsw-filter-aug-budget` 的 small/medium budget 分界 |
+| `--adaptive-budget-tau-medium` | `0.20` | `hnsw-filter-aug-budget` 的 medium/large budget 分界 |
+| `--adaptive-budget-small` | `400` | small-selectivity query 的 HNSW candidates |
+| `--adaptive-budget-medium` | `250` | medium-selectivity query 的 HNSW candidates |
+| `--adaptive-budget-large` | `120` | large-selectivity query 的 HNSW candidates |
+| `--hnsw-n-shards` | `20` | `hnsw-label-shards` 的 label shard 數量 |
+| `--shard-min-budget` | `20` | 每個 shard 至少取出的 candidates |
+
 ## 6. 改 seed 取平均
 
 如果助教想改 seed 並取平均，可以用同一個 CSV 累積多次結果。以下仍使用第 4 節的 best config：
@@ -302,7 +314,61 @@ uv run -m hnsw_ablation_v2_runner \
   --experiment-log experiments/hnsw_ablation_v2_debug.csv
 ```
 
-## 9. CSV 欄位
+## 9. Single-thread follow-up ablation
+
+single-thread 後如果要測新的加速方向，可以跑這個獨立 sweep。它會保留原本 `hnsw-filter-aug` control，另外加入兩個 method：
+
+- `hnsw-filter-aug-budget`: 依 filter selectivity 分成 small/medium/large，三組各用固定 candidate budget。
+- `hnsw-label-shards`: 依 label range 建多個 HNSW shard，query 時只查和 filter range 重疊的 shard。
+
+完整 SIFT1M：
+
+```bash
+RESULTS_CSV=experiments/hnsw_single_thread_followup_full.csv \
+LOG_FILE=experiments/hnsw_single_thread_followup_full.log \
+bash run_hnsw_single_thread_uv.sh --sift --max-base 1000000 --n-query 10000
+```
+
+較小測試：
+
+```bash
+RESULTS_CSV=experiments/hnsw_single_thread_followup_100k.csv \
+LOG_FILE=experiments/hnsw_single_thread_followup_100k.log \
+bash run_hnsw_single_thread_uv.sh --sift --max-base 100000 --n-query 1000
+```
+
+也可以只跑單一新 method：
+
+```bash
+uv run -m main \
+  --sift \
+  --max-base 100000 \
+  --n-query 1000 \
+  --method hnsw-filter-aug-budget \
+  --hnsw-ef-search 200 \
+  --candidate-budget 400 \
+  --hnsw-alpha 0.65 \
+  --hnsw-label-dim-ratio 0.01 \
+  --adaptive-budget-small 400 \
+  --adaptive-budget-medium 220 \
+  --adaptive-budget-large 120 \
+  --experiment-log experiments/hnsw_filter_aug_budget.csv
+```
+
+```bash
+uv run -m main \
+  --sift \
+  --max-base 100000 \
+  --n-query 1000 \
+  --method hnsw-label-shards \
+  --hnsw-ef-search 200 \
+  --candidate-budget 300 \
+  --hnsw-n-shards 20 \
+  --shard-min-budget 20 \
+  --experiment-log experiments/hnsw_label_shards.csv
+```
+
+## 10. CSV 欄位
 
 每一筆實驗會 append 到 CSV。重要欄位：
 
@@ -315,6 +381,8 @@ uv run -m hnsw_ablation_v2_runner \
 | `hnsw_m`, `hnsw_ef_construction`, `hnsw_ef_search` | HNSW graph/query 參數 |
 | `candidate_budget` | HNSW candidate pool size |
 | `hnsw_alpha`, `hnsw_label_dim_ratio` | filter-augmented HNSW 參數 |
+| `adaptive_budget_*` | `hnsw-filter-aug-budget` 的 selectivity bucket 參數 |
+| `hnsw_n_shards`, `shard_min_budget` | `hnsw-label-shards` 參數 |
 | `search_time_s` | 不含 index build 的 query time |
 | `qps` | `n_query / search_time_s` |
 | `mean_recall` | mean Recall@K against exact prefilter ground truth |
@@ -323,7 +391,7 @@ uv run -m hnsw_ablation_v2_runner \
 | `avg_survival_rate` | surviving / total candidates |
 | `queries_with_zero_surviving` | label filter 後沒有 candidate 的 query 數 |
 
-## 10. 注意事項
+## 11. 注意事項
 
 - QPS 不包含 index build time。這符合本專案評分設定，因此 HNSW build time 可以增加，但 query path 要快。
 - 為了公平比較，HNSW index/query 固定使用單 thread；NumPy/BLAS 不額外限制 thread。
@@ -332,7 +400,7 @@ uv run -m hnsw_ablation_v2_runner \
 - 若助教要求較高 recall，可參考下一節的 best recall config。
 - `hnsw-dynamic` 是失敗 ablation，保留在單次 CLI 中可測，但不建議放進主要 sweep。
 
-## 11. Best Recall Config
+## 12. Best Recall Config
 
 如果想優先看 recall，可以跑下面這組。它的 score 會比第 4 節 best config 低，但 recall 較高。
 

@@ -52,6 +52,13 @@ class ExperimentLogger:
         'min_survivors_multiplier',
         'hnsw_alpha',
         'hnsw_label_dim_ratio',
+        'adaptive_budget_tau_small',
+        'adaptive_budget_tau_medium',
+        'adaptive_budget_small',
+        'adaptive_budget_medium',
+        'adaptive_budget_large',
+        'hnsw_n_shards',
+        'shard_min_budget',
         'probe_radius',
         # Metrics
         'search_time_s',

@@ -43,8 +43,10 @@ from hnsw_search import (
     AdaptiveHNSWSearch,
     AdaptiveHNSWAugmentedSearch,
     HNSWDynamicBudgetSearch,
+    HNSWFilterAugmentedAdaptiveBudgetSearch,
     HNSWFilterAugmentedSearch,
     HNSWPostFilterSearch,
+    LabelShardedHNSWSearch,
     LabelSortedPreFilterSearch,
 )
 from hnsw_index import HNSWLIB_IMPORT_ERROR
@@ -111,7 +113,8 @@ def parse_args():
     p.add_argument("--method", 
                    choices=["postfilter", "adaptive", "label-sorted",
                             "hnsw", "adaptive-hnsw", "hnsw-dynamic",
-                            "hnsw-filter-aug", "adaptive-hnsw-aug"],
+                            "hnsw-filter-aug", "hnsw-filter-aug-budget",
+                            "hnsw-label-shards", "adaptive-hnsw-aug"],
                    default="postfilter",
                    help="Search method to use")
     
@@ -144,6 +147,20 @@ def parse_args():
                    help="Vector weight for filter-augmented HNSW")
     p.add_argument("--hnsw-label-dim-ratio", type=float, default=0.05,
                    help="Label-feature dimensions as a ratio of vector dim for filter-augmented HNSW")
+    p.add_argument("--adaptive-budget-tau-small", type=float, default=0.10,
+                   help="Selectivity threshold for small-filter adaptive HNSW budget")
+    p.add_argument("--adaptive-budget-tau-medium", type=float, default=0.20,
+                   help="Selectivity threshold for medium-filter adaptive HNSW budget")
+    p.add_argument("--adaptive-budget-small", type=int, default=400,
+                   help="Candidate budget for small-selectivity HNSW queries")
+    p.add_argument("--adaptive-budget-medium", type=int, default=250,
+                   help="Candidate budget for medium-selectivity HNSW queries")
+    p.add_argument("--adaptive-budget-large", type=int, default=120,
+                   help="Candidate budget for large-selectivity HNSW queries")
+    p.add_argument("--hnsw-n-shards", type=int, default=20,
+                   help="Number of contiguous label shards for hnsw-label-shards")
+    p.add_argument("--shard-min-budget", type=int, default=20,
+                   help="Minimum per-shard candidate budget for hnsw-label-shards")
     
     # --- Multi-probe parameters ---
     p.add_argument("--probe-radius", type=int, default=0,
@@ -177,6 +194,8 @@ def main():
         "adaptive-hnsw",
         "hnsw-dynamic",
         "hnsw-filter-aug",
+        "hnsw-filter-aug-budget",
+        "hnsw-label-shards",
         "adaptive-hnsw-aug",
     }
     if args.method in hnsw_methods and HNSWLIB_IMPORT_ERROR is not None:
@@ -321,6 +340,37 @@ def main():
             hnsw_label_dim_ratio=args.hnsw_label_dim_ratio,
             seed=args.seed,
         )
+    elif args.method == "hnsw-filter-aug-budget":
+        search_method = HNSWFilterAugmentedAdaptiveBudgetSearch(
+            base_vecs,
+            labels,
+            n_labels=args.n_labels,
+            hnsw_m=args.hnsw_m,
+            hnsw_ef_construction=args.hnsw_ef_construction,
+            hnsw_ef_search=args.hnsw_ef_search,
+            candidate_budget=args.candidate_budget,
+            hnsw_alpha=args.hnsw_alpha,
+            hnsw_label_dim_ratio=args.hnsw_label_dim_ratio,
+            adaptive_budget_tau_small=args.adaptive_budget_tau_small,
+            adaptive_budget_tau_medium=args.adaptive_budget_tau_medium,
+            adaptive_budget_small=args.adaptive_budget_small,
+            adaptive_budget_medium=args.adaptive_budget_medium,
+            adaptive_budget_large=args.adaptive_budget_large,
+            seed=args.seed,
+        )
+    elif args.method == "hnsw-label-shards":
+        search_method = LabelShardedHNSWSearch(
+            base_vecs,
+            labels,
+            n_labels=args.n_labels,
+            hnsw_n_shards=args.hnsw_n_shards,
+            hnsw_m=args.hnsw_m,
+            hnsw_ef_construction=args.hnsw_ef_construction,
+            hnsw_ef_search=args.hnsw_ef_search,
+            candidate_budget=args.candidate_budget,
+            shard_min_budget=args.shard_min_budget,
+            seed=args.seed,
+        )
     elif args.method == "adaptive-hnsw":
         search_method = AdaptiveHNSWSearch(
             base_vecs,
@@ -415,15 +465,29 @@ def main():
         )
         uses_hnsw = args.method in hnsw_methods
         uses_dynamic_budget = args.method == 'hnsw-dynamic'
-        uses_hnsw_filter_aug = args.method in ('hnsw-filter-aug', 'adaptive-hnsw-aug')
+        uses_adaptive_budget = args.method == 'hnsw-filter-aug-budget'
+        uses_label_shards = args.method == 'hnsw-label-shards'
+        uses_hnsw_filter_aug = args.method in (
+            'hnsw-filter-aug',
+            'hnsw-filter-aug-budget',
+            'adaptive-hnsw-aug',
+        )
         hyperparams = {
             'alpha': args.alpha if uses_lsh else '',
             'label_dim_ratio': args.label_dim_ratio if uses_lsh else '',
             'n_tables': args.lsh_tables if uses_lsh else '',
             'n_functions': args.lsh_functions if uses_lsh else '',
             'bin_width': args.lsh_bin_width if uses_lsh else '',
-            'tau_small': args.tau_small if args.method in ('adaptive', 'adaptive-hnsw') else '',
-            'tau_medium': args.tau_medium if args.method in ('adaptive', 'adaptive-hnsw') else '',
+            'tau_small': (
+                args.tau_small
+                if args.method in ('adaptive', 'adaptive-hnsw', 'adaptive-hnsw-aug')
+                else ''
+            ),
+            'tau_medium': (
+                args.tau_medium
+                if args.method in ('adaptive', 'adaptive-hnsw', 'adaptive-hnsw-aug')
+                else ''
+            ),
             'adaptive_medium_index': args.adaptive_medium_index if args.method == 'adaptive-hnsw' else '',
             'hnsw_m': args.hnsw_m if uses_hnsw else '',
             'hnsw_ef_construction': (
@@ -436,6 +500,13 @@ def main():
             'min_survivors_multiplier': args.min_survivors_multiplier if uses_dynamic_budget else '',
             'hnsw_alpha': args.hnsw_alpha if uses_hnsw_filter_aug else '',
             'hnsw_label_dim_ratio': args.hnsw_label_dim_ratio if uses_hnsw_filter_aug else '',
+            'adaptive_budget_tau_small': args.adaptive_budget_tau_small if uses_adaptive_budget else '',
+            'adaptive_budget_tau_medium': args.adaptive_budget_tau_medium if uses_adaptive_budget else '',
+            'adaptive_budget_small': args.adaptive_budget_small if uses_adaptive_budget else '',
+            'adaptive_budget_medium': args.adaptive_budget_medium if uses_adaptive_budget else '',
+            'adaptive_budget_large': args.adaptive_budget_large if uses_adaptive_budget else '',
+            'hnsw_n_shards': args.hnsw_n_shards if uses_label_shards else '',
+            'shard_min_budget': args.shard_min_budget if uses_label_shards else '',
             'probe_radius': args.probe_radius,
         }
         

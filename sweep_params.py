@@ -270,6 +270,75 @@ def generate_hnsw_ablation_v2_configs() -> List[Dict[str, Any]]:
     return configs
 
 
+def generate_hnsw_single_thread_configs() -> List[Dict[str, Any]]:
+    """
+    Single-thread-focused HNSW follow-up sweep.
+
+    This keeps the v1/v2 sweeps unchanged and adds only the new methods meant
+    to reduce query-time HNSW work after hnswlib is restricted to one thread:
+
+    - hnsw-filter-aug: control configs around the known best region
+    - hnsw-filter-aug-budget: one HNSW call per query with selectivity-bucketed budgets
+    - hnsw-label-shards: query only label-overlapping HNSW shard graphs
+    """
+    configs: List[Dict[str, Any]] = []
+
+    # Controls around the current best region after HNSW is single-threaded.
+    for ef_search in [100, 200, 300]:
+        for candidate_budget in [150, 200, 300, 400]:
+            for hnsw_alpha in [0.65, 0.75]:
+                configs.append({
+                    'method': 'hnsw-filter-aug',
+                    'hnsw_m': 16,
+                    'hnsw_ef_construction': 200,
+                    'hnsw_ef_search': ef_search,
+                    'candidate_budget': candidate_budget,
+                    'hnsw_alpha': hnsw_alpha,
+                    'hnsw_label_dim_ratio': 0.01,
+                })
+
+    # Fixed selectivity-bucket budgets. This targets the hnsw-dynamic idea
+    # without repeated per-query HNSW calls.
+    for ef_search in [100, 200, 300]:
+        for hnsw_alpha in [0.65, 0.75]:
+            for small_budget, medium_budget, large_budget in [
+                (300, 180, 100),
+                (400, 220, 120),
+                (500, 260, 150),
+            ]:
+                configs.append({
+                    'method': 'hnsw-filter-aug-budget',
+                    'hnsw_m': 16,
+                    'hnsw_ef_construction': 200,
+                    'hnsw_ef_search': ef_search,
+                    'candidate_budget': max(small_budget, medium_budget, large_budget),
+                    'hnsw_alpha': hnsw_alpha,
+                    'hnsw_label_dim_ratio': 0.01,
+                    'adaptive_budget_tau_small': 0.10,
+                    'adaptive_budget_tau_medium': 0.20,
+                    'adaptive_budget_small': small_budget,
+                    'adaptive_budget_medium': medium_budget,
+                    'adaptive_budget_large': large_budget,
+                })
+
+    # Label-sharded graphs. This is most useful when the filter range avoids
+    # many labels, because fewer global false candidates reach reranking.
+    for hnsw_n_shards in [10, 20, 40]:
+        for ef_search in [100, 200]:
+            for candidate_budget in [200, 300, 500]:
+                configs.append({
+                    'method': 'hnsw-label-shards',
+                    'hnsw_m': 16,
+                    'hnsw_ef_construction': 200,
+                    'hnsw_ef_search': ef_search,
+                    'candidate_budget': candidate_budget,
+                    'hnsw_n_shards': hnsw_n_shards,
+                    'shard_min_budget': 20,
+                })
+
+    return configs
+
+
 def generate_shell_commands(configs: List[Dict[str, Any]], 
                            base_args: str = "",
                            output_log: str = "experiments/results.csv") -> List[str]:
@@ -311,7 +380,7 @@ if __name__ == "__main__":
     import sys
     
     if len(sys.argv) < 2:
-        print("Usage: python sweep_params.py {baseline|small|full|hnsw-ablation|hnsw-ablation-v2} [base_args]")
+        print("Usage: python sweep_params.py {baseline|small|full|hnsw-ablation|hnsw-ablation-v2|hnsw-single-thread} [base_args]")
         print("  base_args: e.g., '--sift --sift-dir ./data'")
         sys.exit(1)
     
@@ -328,6 +397,8 @@ if __name__ == "__main__":
         configs = generate_hnsw_ablation_configs()
     elif sweep_type == 'hnsw-ablation-v2':
         configs = generate_hnsw_ablation_v2_configs()
+    elif sweep_type == 'hnsw-single-thread':
+        configs = generate_hnsw_single_thread_configs()
     else:
         print(f"Unknown sweep type: {sweep_type}")
         sys.exit(1)
