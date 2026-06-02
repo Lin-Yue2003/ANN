@@ -41,7 +41,7 @@ class HNSWIndex:
     seed : int
         Fixed random seed for reproducible graph construction.
     num_threads : int
-        hnswlib worker threads. -1 lets hnswlib use all available threads.
+        hnswlib worker threads. Defaults to 1 for fair single-thread QPS.
     """
 
     def __init__(
@@ -52,7 +52,7 @@ class HNSWIndex:
         ef_search: int = 200,
         candidate_budget: int = 1000,
         seed: int = 42,
-        num_threads: int = -1,
+        num_threads: int = 1,
     ):
         if hnswlib is None:
             raise ImportError(

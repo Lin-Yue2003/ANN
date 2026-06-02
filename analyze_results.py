@@ -25,6 +25,13 @@ def cli_arg_for_param(key):
     return f"--{key.replace('_', '-')}"
 
 
+def cli_method_for_logged_method(method):
+    """Map runner-only logged method names to main.py method names."""
+    if method == 'hnsw-filter-aug-v2':
+        return 'hnsw-filter-aug'
+    return method
+
+
 def analyze_results(csv_file):
     """Analyze and print experiment results summary."""
     
@@ -174,8 +181,8 @@ def analyze_results(csv_file):
         print(f"  n_labels:          {best_row.get('n_labels', '?')}")
         
         print(f"\nTo reproduce this result:")
-        print(f"  python main.py \\")
-        print(f"    --method {best_row.get('method', '?')} \\")
+        print(f"  uv run -m main \\")
+        print(f"    --method {cli_method_for_logged_method(best_row.get('method', '?'))} \\")
         for key in ['alpha', 'label_dim_ratio', 'n_tables', 'n_functions', 'bin_width',
                     'tau_small', 'tau_medium', 'adaptive_medium_index', 'hnsw_m',
                     'hnsw_ef_construction', 'hnsw_ef_search', 'candidate_budget',
