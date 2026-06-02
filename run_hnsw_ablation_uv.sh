@@ -18,12 +18,6 @@ set -euo pipefail
 
 mkdir -p experiments
 
-export OMP_NUM_THREADS=1
-export OPENBLAS_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export VECLIB_MAXIMUM_THREADS=1
-export NUMEXPR_NUM_THREADS=1
-
 RESULTS_CSV="${RESULTS_CSV:-experiments/hnsw_ablation_results.csv}"
 LOG_FILE="${LOG_FILE:-experiments/hnsw_ablation_$(date +%Y%m%d_%H%M%S).log}"
 

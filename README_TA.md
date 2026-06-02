@@ -326,6 +326,7 @@ uv run -m hnsw_ablation_v2_runner \
 ## 10. 注意事項
 
 - QPS 不包含 index build time。這符合本專案評分設定，因此 HNSW build time 可以增加，但 query path 要快。
+- 為了公平比較，HNSW index/query 固定使用單 thread；NumPy/BLAS 不額外限制 thread。
 - `PreFilterSearch` 是 exact ground truth，不是競賽 method。
 - `hnsw-filter-aug` 的 recall 可能低於 global HNSW，但 QPS 高很多，因此 final score 最高。
 - 若助教要求較高 recall，可參考下一節的 best recall config。
